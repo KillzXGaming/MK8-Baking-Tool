@@ -1,3 +1,4 @@
+from enum import Enum
 import bpy, os
 import subprocess
 from bpy.props import StringProperty, BoolProperty
@@ -190,13 +191,6 @@ class BakeShadowsOp(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     _timer = None
-    _timer2 = None
-
-    img_ao = None
-    img_shadow = None
-    baked_shadows = False
-    baked_ao = False
-    is_baking = False
 
     def modal(self, context, event):
         ## bake settings
@@ -246,7 +240,6 @@ class BakeShadowsOp(bpy.types.Operator):
                 self.end_meshes(context)
                 return {'FINISHED'}
 
-
         return {'RUNNING_MODAL'}
 
     def bake_shadow_map(self, context):
@@ -264,7 +257,7 @@ class BakeShadowsOp(bpy.types.Operator):
             bpy.context.view_layer.objects.active = obj
 
         if (settings.bake_shadows):
-            result = bpy.ops.object.bake('INVOKE_DEFAULT', type='SHADOW',uv_layer=uvlayer, save_mode='EXTERNAL')
+            result = bpy.ops.object.bake('INVOKE_DEFAULT', type='SHADOW', uv_layer=uvlayer, save_mode='EXTERNAL')
             if result != {'RUNNING_MODAL'}:
                 self.report({'WARNING'}, "Failed to start baking")
                 self.end_meshes(context)
@@ -361,8 +354,88 @@ class BakeShadowsOp(bpy.types.Operator):
             ## Remove render node
             EndMeshBake(obj)
 
+class ImageChannels(Enum):
+    RED = 0
+    GREEN = 1
+    BLUE = 2
+    ALPHA = 3
+
+class CombineShadowsOp(bpy.types.Operator):
+    """
+        Combine AO and shadow bakes into the correct channels of a single
+        image and clean up nodes that were created during the baking process.
+    """
+    bl_idname = 'bake_tools.combine_shadows_op'
+    bl_label = 'Combine Bakes'
+    bl_description = 'Combines Ambient Occlusion and Shadow bakes into specific channels of a single image as expected by MK8'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        ## bake settings
+        settings = context.scene.bake_settings
+
+        ## Output name
+        combined_img_name = settings.bake_name + '_combined'
+        ## Remove any existing bakes
+        for image in bpy.data.images:
+            if image.name == combined_img_name:
+                bpy.data.images.remove(image)
+                break
+
+        # Create new image (default to yellow colour)
+        combined_img = bpy.data.images.new(combined_img_name, settings.image_size, settings.image_size, color=(1.0, 0.745, 0.0, 1.0))
+
+        # Inject AO
+        if settings.bake_ao:
+            ao_img_name = settings.bake_name + "_ao"
+            if ao_img_name not in bpy.data.images:
+                self.report({'WARNING'}, "AO Map not found")
+                return {'FINISHED'}
+            self.inject_into_channel(bpy.data.images[ao_img_name], combined_img, ImageChannels.RED)
+
+        # Inject Shadows
+        if settings.bake_shadows:
+            shadows_img_name = settings.bake_name + "_shadows"
+            if shadows_img_name not in bpy.data.images:
+                self.report({'WARNING'}, "Shadow Map not found")
+                return {'FINISHED'}
+            self.inject_into_channel(bpy.data.images[shadows_img_name], combined_img, ImageChannels.GREEN)
+
+        return {'FINISHED'}
+
+    def inject_into_channel(self, from_img: bpy.types.Image, to_img: bpy.types.Image, channel: ImageChannels):
+        """ Injects an image into one of the (RGBA) channels of another image """
+        # Image editing is slow, so we create a copy of all the pixels first: https://blender.stackexchange.com/a/3678
+        #   Using the tuple object is way faster than direct access to Image.pixels
+        from_pixels = from_img.pixels[:]
+        to_pixels = list(self.to_img.pixels)
+
+        # Sanity check
+        assert len(from_pixels) == len(to_pixels)
+
+        # Modify the copied pixels based on the pixels of `from_img`
+        #   Channel 0, 1, 2, 3 relate to R, G, B, A
+        for i in range(channel.value, len(from_pixels), 4):
+            to_pixels[i] = from_pixels[i]
+
+        # Write copied pixels back to image (Slice notation here means to replace in-place)
+        self.to_img.pixels[:] = to_pixels
+        self.to_img.update()
+
+    def cleanup_bake_nodes(self, context):
+        """ Deletes nodes created during the baking process """
+        for obj in bpy.context.selected_objects:
+            if (obj is None or obj.data.materials is None):
+                continue
+
+            ## Remove render node
+            EndMeshBake(obj)
+
+
 class BakeSettings(bpy.types.PropertyGroup):
 
+    ############################
+    ## Standard Settings
     force_unwrap: bpy.props.BoolProperty(
         name="Force Unwrap",
         description="Forces to unwrap selected before baking",
@@ -379,15 +452,6 @@ class BakeSettings(bpy.types.PropertyGroup):
             maxlen=1024,
             subtype='DIR_PATH')
 
-    directional_light: FloatVectorProperty(
-        name = "Light Direction",
-        description="Light Direction",
-        default=(0.0, -1.0, 0.0),
-        min= 0.0,
-        max = 0.1,
-        subtype = 'XYZ'
-        )
-
     image_size: bpy.props.IntProperty(
         name="Size",
         description="Size of texture for baking",
@@ -398,6 +462,18 @@ class BakeSettings(bpy.types.PropertyGroup):
         description="Group to bake texture to",
         default = 0)
 
+    bake_quality: EnumProperty(
+        name="Quality",
+        items=(
+               ('1', 'Preview', 'Has artifacts. Use to quickly preview'),
+               ('2', 'Medium', 'Decent balance with quality and speed'),
+               ('3', 'High', 'Great quality and not too slow'),
+               ('4', 'Ultra', 'Best quality but very slow'),
+            ),
+        default='2')
+
+    ############################
+    ## Shadow Settings
     bake_ao: bpy.props.BoolProperty(
         name="Bake Ambient Occlusion",
         description="Bake Ambient Occlusion",
@@ -416,16 +492,8 @@ class BakeSettings(bpy.types.PropertyGroup):
             ),
         default='2')
 
-    bake_quality: EnumProperty(
-        name="Quality",
-        items=(
-               ('1', 'Preview', 'Has artifacts. Use to quickly preview'),
-               ('2', 'Medium', 'Decent balance with quality and speed'),
-               ('3', 'High', 'Great quality and not too slow'),
-               ('4', 'Ultra', 'Best quality but very slow'),
-            ),
-        default='2')
-
+    ############################
+    ## Lightmap Settings
     lightmap_format: EnumProperty(
         name="Format",
         items=(
@@ -433,6 +501,17 @@ class BakeSettings(bpy.types.PropertyGroup):
                ('2', 'Exr (HDR)', 'HDR Encoding (stores HDR to alpha channel for import)'),
             ),
         default='2')
+
+    ############################
+    ## BGENV Settings
+    directional_light: FloatVectorProperty(
+        name = "Light Direction",
+        description="Light Direction",
+        default=(0.0, -1.0, 0.0),
+        min= 0.0,
+        max = 0.1,
+        subtype = 'XYZ'
+    )
 
 class BgenvSettings(bpy.types.Panel):
     bl_label = "BGENV Settings"
@@ -481,6 +560,8 @@ class ShadowToolPanel(bpy.types.Panel):
             layout.prop(settings, "bake_shadows")
 
         layout.operator("bake_tools.bake_shadow_op")
+
+        layout.operator("bake_tools.combine_shadows_op")
 
 class LightmapToolPanel(bpy.types.Panel):
     bl_label = "Lightmap Settings"
@@ -536,6 +617,7 @@ def register():
   #  bpy.utils.register_class(BgenvSettings)
     bpy.utils.register_class(BakeSettings)
     bpy.utils.register_class(BakeShadowsOp)
+    bpy.utils.register_class(CombineShadowsOp)
     bpy.utils.register_class(BakeLightmapOp)
     bpy.utils.register_class(UnwrapMeshGroup)
 
@@ -548,6 +630,7 @@ def unregister():
   #  bpy.utils.unregister_class(BgenvSettings)
     bpy.utils.unregister_class(BakeSettings)
     bpy.utils.unregister_class(BakeShadowsOp)
+    bpy.utils.unregister_class(CombineShadowsOp)
     bpy.utils.unregister_class(BakeLightmapOp)
     bpy.utils.unregister_class(UnwrapMeshGroup)
 
