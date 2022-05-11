@@ -9,12 +9,12 @@ bl_info = {
     "description": "Addon to assist with baking gsys type bake maps.",
     "author": "KillzXGaming",
     "version": (2, 0),
-    "blender": (3, 0, 0), 
+    "blender": (3, 0, 0),
     "location": "View3D",
     "category": "3D View",
 }
 
-class UnwrapMeshGrouo(bpy.types.Operator):
+class UnwrapMeshGroup(bpy.types.Operator):
     bl_idname = 'bake_tools.unwrap_meshes_group'
     bl_label = 'Unwrap Mesh Group'
     bl_description = 'Unwrap Mesh Group'
@@ -30,7 +30,7 @@ def SetupBakeSettings(context):
     bpy.context.scene.render.engine = 'CYCLES'
     bpy.context.scene.cycles.device = 'GPU'
     ##Prepare bake quality
-    if (settings.bake_quality == '1'): 
+    if (settings.bake_quality == '1'):
         bpy.context.scene.cycles.samples = 1
     if (settings.bake_quality == '2'):
         bpy.context.scene.cycles.samples = 128
@@ -38,7 +38,7 @@ def SetupBakeSettings(context):
         bpy.context.scene.cycles.samples = 1024
     if (settings.bake_quality == '4'):
         bpy.context.scene.cycles.samples = 4096
-        
+
     print('Cycles sample amount ' + str(bpy.context.scene.cycles.samples))
     bpy.data.worlds["World"].cycles_visibility.diffuse = False
     bpy.data.worlds["World"].node_tree.nodes["Background"].inputs[1].default_value = 0.0
@@ -48,14 +48,14 @@ def TryUnwrapMeshes(settings, uvlayer):
     ## Multi unwrap selected
     bpy.ops.object.editmode_toggle()
     bpy.ops.mesh.select_all(action='SELECT') # for all faces
-        
+
     for obj in bpy.context.selected_objects:
          ##set object as active
          bpy.context.view_layer.objects.active = obj
 
     for obj in bpy.context.selected_objects:
         bake_layer =  obj.data.uv_layers.get(uvlayer)
-        
+
         is_new = False
         if not bake_layer:
             bake_layer = obj.data.uv_layers.new(name=uvlayer)
@@ -95,11 +95,11 @@ class BakeLightmapOp(bpy.types.Operator):
 
     _timer = None
     img_lightmap = None
-    
+
     def modal(self, context, event):
         ## bake settings
         settings = context.scene.bake_settings
-        
+
         if event.type in {'RIGHTMOUSE', 'ESC'}:
             self.cancel(context)
             return {'CANCELLED'}
@@ -110,76 +110,76 @@ class BakeLightmapOp(bpy.types.Operator):
                 save_light_map(context)
                 self.finish(context)
                 return {'FINISHED'}
-            
+
         return {'PASS_THROUGH'}
-    
+
     def execute(self, context):
         ## bake settings
         settings = context.scene.bake_settings
 
         SetupBakeSettings(context)
-        
+
         uvlayer = 'Bake'
-    
+
         ## Output name
         image_name = settings.bake_name + '_b01'
-        
+
         ## Remove any existing bakes
         for image in bpy.data.images:
             if image.name == image_name:
                 bpy.data.images.remove(image)
-        
+
         ## Target bake map
         img = bpy.data.images.new(image_name,settings.image_size,settings.image_size)
-        
+
         TryUnwrapMeshes(settings, uvlayer)
 
         for obj in bpy.context.selected_objects:
             if (obj is None or obj.data.materials is None):
                 continue
-        
+
             BeginMeshBake(img, obj,uvlayer)
             bpy.context.view_layer.objects.active = obj
 
 
         result = bpy.ops.object.bake('INVOKE_DEFAULT', type='DIFFUSE', pass_filter={'DIRECT','INDIRECT'},uv_layer=uvlayer, save_mode='EXTERNAL')
-        if result != {'RUNNING_MODAL'}: 
+        if result != {'RUNNING_MODAL'}:
             self.report({'WARNING'}, "Failed to start baking")
             self.end_meshes(context)
             return {'FINISHED'}
-           
 
-        
+
+
         return {'RUNNING_MODAL'}
-    
+
     def save_light_map(self,context):
         ## bake settings
         settings = context.scene.bake_settings
         folder =  bpy.path.abspath(settings.export_path)
 
         img.save_render(filepath=folder + '\\' + image_name + '.exr')
-           
+
         #Set active image as new bake
         for area in bpy.context.screen.areas :
             if area.type == 'IMAGE_EDITOR' :
                     area.spaces.active.image = img
-    
+
     def cancel(self, context):
         self.report({'INFO'}, "Baking map cancelled")
         self.end_meshes(context)
-        
+
     def finish(self, context):
         wm = context.window_manager
         wm = context.window_manager
         wm.event_timer_remove(self._timer)
         self.report({'INFO'}, "Baking map completed")
         self.end_meshes(context)
- 
+
     def end_meshes(self, context):
         for obj in bpy.context.selected_objects:
             if (obj is None or obj.data.materials is None):
                 continue
-            
+
             ## Remove render node
             EndMeshBake(obj)
 
@@ -191,7 +191,7 @@ class BakeShadowsOp(bpy.types.Operator):
 
     _timer = None
     _timer2 = None
-    
+
     img_ao = None
     img_shadow = None
     baked_shadows = False
@@ -201,7 +201,7 @@ class BakeShadowsOp(bpy.types.Operator):
     def modal(self, context, event):
         ## bake settings
         settings = context.scene.bake_settings
-        
+
         if event.type in {'RIGHTMOUSE', 'ESC'}:
             self.cancel(context)
             return {'CANCELLED'}
@@ -212,9 +212,9 @@ class BakeShadowsOp(bpy.types.Operator):
                 self.baked_ao = True
                 self.finish(context)
                 self.bake_shadow_map(context)
-                
+
                 return {'PASS_THROUGH'}
-            
+
             ## Finished baking shadows. Finalize the output
             if settings.bake_shadows and self.img_shadow.is_dirty and self.baked_shadows == False:
                 self.baked_shadows = True
@@ -222,9 +222,9 @@ class BakeShadowsOp(bpy.types.Operator):
                 self.save_shadow_map(context)
 
                 return {'FINISHED'}
-            
+
         return {'PASS_THROUGH'}
-    
+
     def bake_ao_map(self, context):
         print("Baking AO")
         uvlayer = 'Bake'
@@ -234,21 +234,21 @@ class BakeShadowsOp(bpy.types.Operator):
         for obj in bpy.context.selected_objects:
             if (obj is None or obj.data.materials is None):
                 continue
-        
+
             ## Select node to bake
             BeginMeshBake(self.img_ao, obj,uvlayer)
             bpy.context.view_layer.objects.active = obj
-        
+
         if (settings.bake_ao):
             result = bpy.ops.object.bake('INVOKE_DEFAULT', type='AO',uv_layer=uvlayer, save_mode='EXTERNAL')
-            if result != {'RUNNING_MODAL'}: 
+            if result != {'RUNNING_MODAL'}:
                 self.report({'WARNING'}, "Failed to start baking")
                 self.end_meshes(context)
                 return {'FINISHED'}
-        
+
 
         return {'RUNNING_MODAL'}
-    
+
     def bake_shadow_map(self, context):
         print("Baking SHADOWS")
         uvlayer = 'Bake'
@@ -258,62 +258,62 @@ class BakeShadowsOp(bpy.types.Operator):
         for obj in bpy.context.selected_objects:
             if (obj is None or obj.data.materials is None):
                 continue
-        
+
             ## Select node to bake
             BeginMeshBake(self.img_shadow, obj,uvlayer)
             bpy.context.view_layer.objects.active = obj
 
         if (settings.bake_shadows):
             result = bpy.ops.object.bake('INVOKE_DEFAULT', type='SHADOW',uv_layer=uvlayer, save_mode='EXTERNAL')
-            if result != {'RUNNING_MODAL'}: 
+            if result != {'RUNNING_MODAL'}:
                 self.report({'WARNING'}, "Failed to start baking")
                 self.end_meshes(context)
                 return {'FINISHED'}
 
         return {'RUNNING_MODAL'}
-    
+
     def execute(self, context):
         ## bake settings
         settings = context.scene.bake_settings
-        
+
         SetupBakeSettings(context)
-        
+
         uvlayer = 'Bake'
-    
+
         ## Output name
         image_name = settings.bake_name + '_b00'
         ## Remove any existing bakes
         for image in bpy.data.images:
             if image.name == image_name:
                 bpy.data.images.remove(image)
-        
+
         ## Target bake map
         self.img_ao = bpy.data.images.new(image_name,settings.image_size,settings.image_size)
         self.img_shadow = bpy.data.images.new(image_name,settings.image_size,settings.image_size)
 
         ## Try to unwrap meshes
         TryUnwrapMeshes(settings, uvlayer)
-        
+
         self.baked_ao = False
         self.bake_shadows = False
-    
+
         ## Start a timer for the baking process
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.5, window=context.window)
         wm.modal_handler_add(self)
-        
+
         ## Bake AO first
         self.bake_shadow_map(context)
-        
+
         return {'RUNNING_MODAL'}
-    
+
     def save_shadow_map(self,context):
         print("save_shadow_map")
         ## bake settings
         settings = context.scene.bake_settings
         ## Output name
         image_name = settings.bake_name + '_b00'
-        
+
         ## Transfer the shadow image to the ao green channel
         source_pixels = self.img_shadow.pixels[:]
         target_pixels = list(self.img_ao.pixels)
@@ -325,84 +325,84 @@ class BakeShadowsOp(bpy.types.Operator):
             target_pixels[i+1] = source_pixels[i]
             target_pixels[i+2] = 0.0
             target_pixels[i+3] = 1.0
-            
+
         ## Update the AO image with the shadow
         self.img_ao.pixels[:] = target_pixels
         self.img_ao.update()
-        
+
         folder =  bpy.path.abspath(settings.export_path)
 
         ## Save to disk
         self.img_ao.save_render(filepath=folder + '\\' + image_name + '.png')
 
         bpy.data.images.remove(self.img_shadow)
-        
+
         #Set active image as new bake
         for area in bpy.context.screen.areas :
             if area.type == 'IMAGE_EDITOR' :
                     area.spaces.active.image = self.img_ao
-            
+
     def cancel(self, context):
         self.report({'INFO'}, "Baking map cancelled")
         self.end_meshes(context)
-        
+
     def finish(self, context):
         wm = context.window_manager
         wm = context.window_manager
         wm.event_timer_remove(self._timer)
         self.report({'INFO'}, "Baking map completed")
         self.end_meshes(context)
- 
+
     def end_meshes(self, context):
         for obj in bpy.context.selected_objects:
             if (obj is None or obj.data.materials is None):
                 continue
-            
+
             ## Remove render node
             EndMeshBake(obj)
 
 class BakeSettings(bpy.types.PropertyGroup):
-    
+
     force_unwrap: bpy.props.BoolProperty(
         name="Force Unwrap",
         description="Forces to unwrap selected before baking",
         default = False)
-    
+
     bake_name : StringProperty(
             name="Texture Name",
             default="Gu_Map_g00")
-    
+
     export_path : StringProperty(
             name="Export Path",
             default = "C:\\TEMP",
             description="Choose a directory:",
             maxlen=1024,
             subtype='DIR_PATH')
-    
+
     directional_light: FloatVectorProperty(
         name = "Light Direction",
         description="Light Direction",
-        default=(0.0, -1.0, 0.0), 
+        default=(0.0, -1.0, 0.0),
         min= 0.0,
         max = 0.1,
         subtype = 'XYZ'
         )
-        
+
     image_size: bpy.props.IntProperty(
         name="Size",
         description="Size of texture for baking",
         default = 1024)
-        
+
     bake_group: bpy.props.IntProperty(
         name="Group Index",
         description="Group to bake texture to",
         default = 0)
-        
+
     bake_ao: bpy.props.BoolProperty(
         name="Bake Ambient Occlusion",
         description="Bake Ambient Occlusion",
         default = True)
-        
+
     bake_shadows: bpy.props.BoolProperty(
         name="Bake Shadows",
         description="Bake Shadows",
@@ -446,19 +446,19 @@ class BgenvSettings(bpy.types.Panel):
         layout = self.layout
         settings = context.scene.bake_settings
         col = layout.column()
-        
+
         obj = bpy.data.objects["Sun"]
-        if (obj is not None):    
+        if (obj is not None):
             axis_angle = obj.rotation_axis_angle
-            
+
            # layout.label(text=str(axis_angle[0]))
            # layout.label(text=str(axis_angle[1]))
          #   layout.label(text=str(axis_angle[2]))
-            
+
            # settings.directional_light = (matXR, matYR, matZR)
 
       #  layout.prop(settings, "directional_light")
-        
+
 class ShadowToolPanel(bpy.types.Panel):
     bl_label = "Shadow Settings"
     bl_category = "Bake Editor"
@@ -476,12 +476,12 @@ class ShadowToolPanel(bpy.types.Panel):
 
         layout.prop(settings, "shadow_type")
         layout.prop(settings, "bake_ao")
-        
+
         if (settings.shadow_type == "2"):
             layout.prop(settings, "bake_shadows")
-        
+
         layout.operator("bake_tools.bake_shadow_op")
-        
+
 class LightmapToolPanel(bpy.types.Panel):
     bl_label = "Lightmap Settings"
     bl_category = "Bake Editor"
@@ -493,13 +493,13 @@ class LightmapToolPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         settings = context.scene.bake_settings
-        
+
         scene = context.scene
 
         layout.prop(settings, "lightmap_format")
 
         layout.operator("bake_tools.bake_lightmap_op")
-        
+
 class BakeToolPanel(bpy.types.Panel):
     bl_label = "Bake Editor"
     bl_category = "Bake Editor"
@@ -510,26 +510,26 @@ class BakeToolPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         settings = context.scene.bake_settings
-        
+
         scene = context.scene
-        
+
         layout.prop(settings, "export_path")
-        
+
         layout.prop(settings, "bake_name")
-        
+
         layout.prop(settings, "bake_quality")
-        
+
         layout.prop(bpy.context.scene.render.bake, "margin")
-        
+
 
      #   layout.prop(settings, "bake_group")
-        
+
         layout.prop(settings, "image_size")
-        
+
         layout.prop(settings, "force_unwrap")
-        
+
 def register():
-    
+
     bpy.utils.register_class(BakeToolPanel)
     bpy.utils.register_class(ShadowToolPanel)
     bpy.utils.register_class(LightmapToolPanel)
@@ -537,7 +537,7 @@ def register():
     bpy.utils.register_class(BakeSettings)
     bpy.utils.register_class(BakeShadowsOp)
     bpy.utils.register_class(BakeLightmapOp)
-    bpy.utils.register_class(UnwrapMeshGrouo)
+    bpy.utils.register_class(UnwrapMeshGroup)
 
     bpy.types.Scene.bake_settings = bpy.props.PointerProperty(type=BakeSettings)
 
@@ -549,7 +549,7 @@ def unregister():
     bpy.utils.unregister_class(BakeSettings)
     bpy.utils.unregister_class(BakeShadowsOp)
     bpy.utils.unregister_class(BakeLightmapOp)
-    bpy.utils.unregister_class(UnwrapMeshGrouo)
+    bpy.utils.unregister_class(UnwrapMeshGroup)
 
     del bpy.types.Scene.bake_settings
 
