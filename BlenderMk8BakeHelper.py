@@ -44,15 +44,12 @@ def SetupBakeSettings(context):
     bpy.data.worlds["World"].cycles_visibility.diffuse = False
     bpy.data.worlds["World"].node_tree.nodes["Background"].inputs[1].default_value = 0.0
 
-def TryUnwrapMeshes(settings, uvlayer):
+def TryUnwrapMeshes(context, uvlayer):
+    """ Unwraps selected meshes if a given UV layer does not exist, or if `settings.force_unwrap = True`"""
 
     ## Multi unwrap selected
     bpy.ops.object.editmode_toggle()
     bpy.ops.mesh.select_all(action='SELECT') # for all faces
-
-    for obj in bpy.context.selected_objects:
-         ##set object as active
-         bpy.context.view_layer.objects.active = obj
 
     for obj in bpy.context.selected_objects:
         bake_layer =  obj.data.uv_layers.get(uvlayer)
@@ -61,11 +58,13 @@ def TryUnwrapMeshes(settings, uvlayer):
         if not bake_layer:
             bake_layer = obj.data.uv_layers.new(name=uvlayer)
             is_new = True
-        if is_new or settings.force_unwrap:
+        if is_new or context.scene.bake_settings.force_unwrap:
             ##set active to unwrap
             bake_layer.active = True
 
-            bpy.ops.uv.smart_project()
+            # Make sure island margin matches the set bake margin (or else individual mesh
+            #   bake margins will overwrite previous bake results)
+            bpy.ops.uv.smart_project(island_margin=context.scene.render.bake.margin)
 
     bpy.ops.object.editmode_toggle()
 
@@ -85,7 +84,7 @@ def EndMeshBake(obj):
     #In the last step, we are going to delete the nodes we created earlier
     for mat in obj.data.materials:
         for n in mat.node_tree.nodes:
-            if n.name == 'Bake_node':
+            if n.name.startswith("Bake_node"):
                 mat.node_tree.nodes.remove(n)
 
 class BakeLightmapOp(bpy.types.Operator):
@@ -133,7 +132,7 @@ class BakeLightmapOp(bpy.types.Operator):
         ## Target bake map
         img = bpy.data.images.new(image_name,settings.image_size,settings.image_size)
 
-        TryUnwrapMeshes(settings, uvlayer)
+        TryUnwrapMeshes(context, uvlayer)
 
         for obj in bpy.context.selected_objects:
             if (obj is None or obj.data.materials is None):
@@ -190,59 +189,54 @@ class BakeShadowsOp(bpy.types.Operator):
     bl_description = 'Bake Shadows'
     bl_options = {'REGISTER', 'UNDO'}
 
-    _timer = None
+    UV_LAYER = 'Bake'
 
-    def modal(self, context, event):
+    def execute(self, context):
         ## bake settings
         settings = context.scene.bake_settings
 
-        if event.type in {'RIGHTMOUSE', 'ESC'}:
-            self.cancel(context)
-            return {'CANCELLED'}
+        SetupBakeSettings(context)
 
-        if event.type == 'TIMER':
-            ## Finished baking ao. Do shadows next
-            if settings.bake_ao and self.img_ao.is_dirty and self.baked_ao == False:
-                self.baked_ao = True
-                self.finish(context)
-                self.bake_shadow_map(context)
+        ## Output name
+        image_name = settings.bake_name
+        ## Remove any existing bakes
+        for image in bpy.data.images:
+            if image.name in [image_name + "_ao", image_name + "_shadows"]:
+                bpy.data.images.remove(image)
 
-                return {'PASS_THROUGH'}
-
-            ## Finished baking shadows. Finalize the output
-            if settings.bake_shadows and self.img_shadow.is_dirty and self.baked_shadows == False:
-                self.baked_shadows = True
-                self.finish(context)
-                self.save_shadow_map(context)
-
-                return {'FINISHED'}
-
-        return {'PASS_THROUGH'}
-
-    def bake_ao_map(self, context):
-        print("Baking AO")
-        uvlayer = 'Bake'
-        ## bake settings
-        settings = context.scene.bake_settings
-        ##Prepare shader nodes for meshes
+        # Remove selected non-meshes (E.g. lights, curves, etc.) from selection
+        mesh_obj = None
         for obj in bpy.context.selected_objects:
-            if (obj is None or obj.data.materials is None):
+            if obj.type != 'MESH':
+                # Can only bake meshes
+                obj.select_set(False)
                 continue
+            mesh_obj = obj
 
-            ## Select node to bake
-            BeginMeshBake(self.img_ao, obj,uvlayer)
-            bpy.context.view_layer.objects.active = obj
+        # Sanity check: should have at least one mesh to bake
+        if mesh_obj is None:
+            self.report({'WARNING'}, "No meshes selected")
+            return {'FINISHED'}
 
-        if (settings.bake_ao):
-            result = bpy.ops.object.bake('INVOKE_DEFAULT', type='AO',uv_layer=uvlayer, save_mode='EXTERNAL')
-            if result != {'RUNNING_MODAL'}:
-                self.report({'WARNING'}, "Failed to start baking")
-                self.end_meshes(context)
-                return {'FINISHED'}
+        # Make sure a mesh object is the active one (we don't care which one specifically)
+        bpy.context.view_layer.objects.active = mesh_obj
 
-        return {'RUNNING_MODAL'}
+        ## Try to unwrap meshes
+        TryUnwrapMeshes(context, self.UV_LAYER)
 
-    def bake_shadow_map(self, context):
+        ## Target bake maps
+        if settings.bake_ao:
+            img_ao = bpy.data.images.new(image_name + "_ao", settings.image_size, settings.image_size)
+            # TODO: AO Baking; there's not actually a way to guarantee that this is finished before
+            #   shadow baking starts, so this setup will need to be modified further.
+
+        if settings.bake_shadows:
+            img_shadow = bpy.data.images.new(image_name + "_shadows", settings.image_size, settings.image_size)
+            self.bake_shadow_map(context, img_shadow)
+
+        return {'FINISHED'}
+
+    def bake_shadow_map(self, context, image):
         print("Baking SHADOWS")
         uvlayer = 'Bake'
         ## bake settings
@@ -253,106 +247,16 @@ class BakeShadowsOp(bpy.types.Operator):
                 continue
 
             ## Select node to bake
-            BeginMeshBake(self.img_shadow, obj,uvlayer)
+            BeginMeshBake(image, obj, uvlayer)
             bpy.context.view_layer.objects.active = obj
 
         if (settings.bake_shadows):
             result = bpy.ops.object.bake('INVOKE_DEFAULT', type='SHADOW', uv_layer=uvlayer, save_mode='EXTERNAL')
             if result != {'RUNNING_MODAL'}:
                 self.report({'WARNING'}, "Failed to start baking")
-                self.end_meshes(context)
                 return {'FINISHED'}
 
         return {'RUNNING_MODAL'}
-
-    def execute(self, context):
-        ## bake settings
-        settings = context.scene.bake_settings
-
-        SetupBakeSettings(context)
-
-        uvlayer = 'Bake'
-
-        ## Output name
-        image_name = settings.bake_name + '_b00'
-        ## Remove any existing bakes
-        for image in bpy.data.images:
-            if image.name == image_name:
-                bpy.data.images.remove(image)
-
-        ## Target bake map
-        self.img_ao = bpy.data.images.new(image_name,settings.image_size,settings.image_size)
-        self.img_shadow = bpy.data.images.new(image_name,settings.image_size,settings.image_size)
-
-        ## Try to unwrap meshes
-        TryUnwrapMeshes(settings, uvlayer)
-
-        self.baked_ao = False
-        self.bake_shadows = False
-
-        ## Start a timer for the baking process
-        wm = context.window_manager
-        self._timer = wm.event_timer_add(0.5, window=context.window)
-        wm.modal_handler_add(self)
-
-        ## Bake AO first
-        self.bake_shadow_map(context)
-
-        return {'RUNNING_MODAL'}
-
-    def save_shadow_map(self,context):
-        print("save_shadow_map")
-        ## bake settings
-        settings = context.scene.bake_settings
-        ## Output name
-        image_name = settings.bake_name + '_b00'
-
-        ## Transfer the shadow image to the ao green channel
-        source_pixels = self.img_shadow.pixels[:]
-        target_pixels = list(self.img_ao.pixels)
-
-        assert len(source_pixels) == len(target_pixels)
-
-        for i in range(0, len(source_pixels), 4):
-            target_pixels[i+0] = 1.0
-            target_pixels[i+1] = source_pixels[i]
-            target_pixels[i+2] = 0.0
-            target_pixels[i+3] = 1.0
-
-        ## Update the AO image with the shadow
-        self.img_ao.pixels[:] = target_pixels
-        self.img_ao.update()
-
-        folder =  bpy.path.abspath(settings.export_path)
-
-        ## Save to disk
-        self.img_ao.save_render(filepath=folder + '\\' + image_name + '.png')
-
-        bpy.data.images.remove(self.img_shadow)
-
-        #Set active image as new bake
-        for area in bpy.context.screen.areas :
-            if area.type == 'IMAGE_EDITOR' :
-                    area.spaces.active.image = self.img_ao
-
-    def cancel(self, context):
-        self.report({'INFO'}, "Baking map cancelled")
-        self.end_meshes(context)
-
-    def finish(self, context):
-        wm = context.window_manager
-        wm = context.window_manager
-        wm.event_timer_remove(self._timer)
-        self.report({'INFO'}, "Baking map completed")
-        self.end_meshes(context)
-
-    def end_meshes(self, context):
-        for obj in bpy.context.selected_objects:
-            if (obj is None or obj.data.materials is None):
-                continue
-
-            ## Remove render node
-            EndMeshBake(obj)
 
 class ImageChannels(Enum):
     RED = 0
@@ -382,8 +286,7 @@ class CombineShadowsOp(bpy.types.Operator):
                 bpy.data.images.remove(image)
                 break
 
-        # Create new image (default to yellow colour)
-        combined_img = bpy.data.images.new(combined_img_name, settings.image_size, settings.image_size, color=(1.0, 0.745, 0.0, 1.0))
+        combined_img = bpy.data.images.new(combined_img_name, settings.image_size, settings.image_size)
 
         # Inject AO
         if settings.bake_ao:
@@ -401,6 +304,14 @@ class CombineShadowsOp(bpy.types.Operator):
                 return {'FINISHED'}
             self.inject_into_channel(bpy.data.images[shadows_img_name], combined_img, ImageChannels.GREEN)
 
+        # Set combined image as active
+        for area in bpy.context.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                area.spaces.active.image = combined_img
+
+        # Cleanup old nodes
+        self.cleanup_bake_nodes(context)
+
         return {'FINISHED'}
 
     def inject_into_channel(self, from_img: bpy.types.Image, to_img: bpy.types.Image, channel: ImageChannels):
@@ -408,7 +319,7 @@ class CombineShadowsOp(bpy.types.Operator):
         # Image editing is slow, so we create a copy of all the pixels first: https://blender.stackexchange.com/a/3678
         #   Using the tuple object is way faster than direct access to Image.pixels
         from_pixels = from_img.pixels[:]
-        to_pixels = list(self.to_img.pixels)
+        to_pixels = list(to_img.pixels)
 
         # Sanity check
         assert len(from_pixels) == len(to_pixels)
@@ -419,8 +330,8 @@ class CombineShadowsOp(bpy.types.Operator):
             to_pixels[i] = from_pixels[i]
 
         # Write copied pixels back to image (Slice notation here means to replace in-place)
-        self.to_img.pixels[:] = to_pixels
-        self.to_img.update()
+        to_img.pixels[:] = to_pixels
+        to_img.update()
 
     def cleanup_bake_nodes(self, context):
         """ Deletes nodes created during the baking process """
@@ -600,10 +511,13 @@ class BakeToolPanel(bpy.types.Panel):
 
         layout.prop(settings, "bake_quality")
 
+        # In Cycles, margins are applied per mesh instead of at the very end. This means that it's
+        #   possible they overwrite previous bake results. To prevent that, a low (or zero) margin
+        #   should be used, or UV islands should be packed with a margin too.
+        #   See: https://developer.blender.org/T83971
         layout.prop(bpy.context.scene.render.bake, "margin")
 
-
-     #   layout.prop(settings, "bake_group")
+        # layout.prop(settings, "bake_group")
 
         layout.prop(settings, "image_size")
 
@@ -614,7 +528,7 @@ def register():
     bpy.utils.register_class(BakeToolPanel)
     bpy.utils.register_class(ShadowToolPanel)
     bpy.utils.register_class(LightmapToolPanel)
-  #  bpy.utils.register_class(BgenvSettings)
+    # bpy.utils.register_class(BgenvSettings)
     bpy.utils.register_class(BakeSettings)
     bpy.utils.register_class(BakeShadowsOp)
     bpy.utils.register_class(CombineShadowsOp)
@@ -627,7 +541,7 @@ def unregister():
     bpy.utils.unregister_class(BakeToolPanel)
     bpy.utils.unregister_class(ShadowToolPanel)
     bpy.utils.unregister_class(LightmapToolPanel)
-  #  bpy.utils.unregister_class(BgenvSettings)
+    # bpy.utils.unregister_class(BgenvSettings)
     bpy.utils.unregister_class(BakeSettings)
     bpy.utils.unregister_class(BakeShadowsOp)
     bpy.utils.unregister_class(CombineShadowsOp)
