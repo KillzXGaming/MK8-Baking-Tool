@@ -258,12 +258,6 @@ class BakeShadowsOp(bpy.types.Operator):
 
         return {'RUNNING_MODAL'}
 
-class ImageChannels(Enum):
-    RED = 0
-    GREEN = 1
-    BLUE = 2
-    ALPHA = 3
-
 class CombineShadowsOp(bpy.types.Operator):
     """
         Combine AO and shadow bakes into the correct channels of a single
@@ -289,49 +283,70 @@ class CombineShadowsOp(bpy.types.Operator):
         combined_img = bpy.data.images.new(combined_img_name, settings.image_size, settings.image_size)
 
         # Inject AO
+        ao_img = None
         if settings.bake_ao:
             ao_img_name = settings.bake_name + "_ao"
             if ao_img_name not in bpy.data.images:
                 self.report({'WARNING'}, "AO Map not found")
                 return {'FINISHED'}
-            self.inject_into_channel(bpy.data.images[ao_img_name], combined_img, ImageChannels.RED)
+            # TODO: AO not actually baked yet
+            # ao_img = bpy.data.images[ao_img_name]
 
         # Inject Shadows
+        shadows_img = None
         if settings.bake_shadows:
             shadows_img_name = settings.bake_name + "_shadows"
             if shadows_img_name not in bpy.data.images:
                 self.report({'WARNING'}, "Shadow Map not found")
                 return {'FINISHED'}
-            self.inject_into_channel(bpy.data.images[shadows_img_name], combined_img, ImageChannels.GREEN)
+            shadows_img = bpy.data.images[shadows_img_name]
 
-        # Set combined image as active
-        for area in bpy.context.screen.areas:
-            if area.type == 'IMAGE_EDITOR':
-                area.spaces.active.image = combined_img
+        # Move AO to red channel, shadows to green channel
+        self.combine_into_channels(combined_img, red_img=ao_img, green_img=shadows_img)
 
         # Cleanup old nodes
         self.cleanup_bake_nodes(context)
 
         return {'FINISHED'}
 
-    def inject_into_channel(self, from_img: bpy.types.Image, to_img: bpy.types.Image, channel: ImageChannels):
-        """ Injects an image into one of the (RGBA) channels of another image """
+    def combine_into_channels(self, target_img, red_img=None, green_img=None, blue_img=None, alpha_img=None, fallback_colours=(1.0, 0.745, 0.0, 1.0)):
+        """
+            Injects images into one of the (RGBA) channels of another image, using a fallback-colour if
+            an image was not provided for a specific channel
+        """
         # Image editing is slow, so we create a copy of all the pixels first: https://blender.stackexchange.com/a/3678
         #   Using the tuple object is way faster than direct access to Image.pixels
-        from_pixels = from_img.pixels[:]
-        to_pixels = list(to_img.pixels)
+        target_pixels = list(target_img.pixels)
+        num_pixels = len(target_pixels)
+
+        # Use fallback colour if an image was not provided for a channel
+        red_pixels = [fallback_colours[0]]*num_pixels if red_img is None else red_img.pixels[:]
+        green_pixels = [fallback_colours[1]]*num_pixels if green_img is None else green_img.pixels[:]
+        blue_pixels = [fallback_colours[2]]*num_pixels if blue_img is None else blue_img.pixels[:]
+        alpha_pixels = [fallback_colours[3]]*num_pixels if alpha_img is None else alpha_img.pixels[:]
 
         # Sanity check
-        assert len(from_pixels) == len(to_pixels)
+        assert len(red_pixels) == len(target_pixels)
+        assert len(blue_pixels) == len(target_pixels)
+        assert len(green_pixels) == len(target_pixels)
+        assert len(alpha_pixels) == len(target_pixels)
 
         # Modify the copied pixels based on the pixels of `from_img`
         #   Channel 0, 1, 2, 3 relate to R, G, B, A
-        for i in range(channel.value, len(from_pixels), 4):
-            to_pixels[i] = from_pixels[i]
+        for i in range(0, num_pixels, 4):
+            target_pixels[i] = red_pixels[i]
+            target_pixels[i+1] = green_pixels[i+1]
+            target_pixels[i+2] = blue_pixels[i+2]
+            target_pixels[i+3] = alpha_pixels[i+3]
 
         # Write copied pixels back to image (Slice notation here means to replace in-place)
-        to_img.pixels[:] = to_pixels
-        to_img.update()
+        target_img.pixels[:] = target_pixels
+        target_img.update()
+
+        # Set combined image as active
+        for area in bpy.context.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                area.spaces.active.image = target_img
 
     def cleanup_bake_nodes(self, context):
         """ Deletes nodes created during the baking process """
